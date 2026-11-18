@@ -93,19 +93,65 @@ For example, to show the share of each category while counting each line at most
 
 With `--recount`, a line can contribute more than one count, so percentages describe the share of counts rather than the share of input lines.
 
-### Percentage anomaly highlighting
+### Changes from the previous bucket
 
-Use `--anomalies` to include percentages and highlight unusual shares for each category:
+Use `--color-change` to show each category's percentage and its change from the previous completed bucket:
 
 ```sh
-tail -f /var/log/maillog | ./logetizer.py --rules test.rules --anomalies
+tail -f /var/log/maillog | ./logetizer.py --rules test.rules --color-change
 ```
 
-Yellow means at least 2 standard deviations from the baseline; red means at least 3, for both increases and decreases. Each category is compared with its own percentages in the previous 100 completed, nonempty buckets, starting with the third bucket if the previous percentages span no more than 2 percentage points. If startup percentages vary more than that, highlighting waits for five completed buckets. This early-start check is applied separately to each category. Missing categories count as 0% in those buckets; empty time intervals are still omitted. Categories with zero current counts remain omitted.
+For example, `(9% +3pp)` means the share rose from 6% to 9%. Only the change is colored: red for increases and green for decreases, indicating direction rather than severity. The first bucket has no comparison. An absent category has a 0% share; categories disappearing since the previous bucket get a zero-count row so their decrease is visible. Empty time intervals are omitted, so comparisons can span gaps in filtered input.
 
-To keep spikes from skewing the average, the baseline first excludes values more than two robust standard deviations from the median (using median absolute deviation scaled by 1.4826). It then uses the mean and population standard deviation of the remaining values. Both the clipping tolerance and final standard deviation have a floor of one percentage point, so constant histories work and tiny changes aren't exaggerated. Calculations use unrounded percentages.
+`--min-change PP` controls the minimum absolute change displayed, in percentage points (default `0.1`). Changes are computed before rounding and displayed to one decimal place, with trailing zeros omitted; changes that round to zero are omitted. Percentages retain whole-number rounding. Live comparisons always use the previous completed bucket, so redraws don't affect the baseline.
 
-Live percentages are provisional and use only completed buckets as history. Colors are enabled automatically on terminals, unless `NO_COLOR` is set. Use `--color always` to retain colors when piping, or `--color never` to disable them. The percentage stays uncolored. Anomalies append a signed change from the filtered historical mean in percentage points, for example `(9% +3pp)` means 9% compared with a 6% baseline. Only the change is colored; it remains visible with colors disabled. Changes are rounded to one decimal place, omitting trailing zeros. Normal percentages have no change appended. This is a heuristic for changes in category share; low-volume buckets can naturally have large percentage swings.
+Colors are automatic on terminals unless `NO_COLOR` is set. Use `--color always` to retain colors through pipes, or `--color never` to disable them. Signed changes remain visible without colors. `--percent` alone still displays percentages without changes.
+
+### JSON Lines output
+
+Use `--json` to emit one JSON object per finalized, nonempty bucket. There is no header, blank separator, ANSI coloring or live preview, even with `--live`. Diagnostics remain on stderr. The last bucket is emitted on EOF or Ctrl+C and may represent only part of the configured time interval. `--json` cannot be combined with `--debug-print-miss`.
+
+```sh
+./logetizer.py --rules test.rules --bucket-size 6h --misses --json < /var/log/maillog > buckets.jsonl
+```
+
+Each record has this schema:
+
+```json
+{"version": 1, "bucket": 1, "start": "2026-11-18T00:00:00", "bucket_size": 21600, "total": 1000, "counts": {"errors": 10, "logins": 990}}
+```
+
+`bucket_size` is in seconds. `total` is the sum of visible category counts, including `Misses` when requested and excluding silent matches. With `--recount`, it can exceed the number of input lines. Counts retain their full precision; consumers calculate shares from counts and total. `start` uses the same unconverted local timestamp as text output. Text display options do not alter the exported counts.
+
+## Bucketlyzer
+
+Bucketlyzer analyzes Logetizer JSON Lines from stdin. It uses only the Python standard library. Statistical analysis now lives here; Logetizer's former `--anomalies` option has been removed.
+
+```sh
+./logetizer.py --rules test.rules --bucket-size 6h --misses --json < /var/log/maillog |
+  ./bucketlyzer.py --min-count 20 --min-excess 50
+```
+
+By default it combines `new` and `share` methods. Select methods explicitly with repeated `--method` options:
+
+| Method | Behavior |
+| --- | --- |
+| `new` | Report a category never previously observed with a positive count, when its current count reaches `--min-count` (default 10). The first bucket establishes known categories without findings. A category previously seen with a small count is not new later. |
+| `share` | Compare the current share with the mean share across previous buckets. Require both an absolute excess-event count of at least `--min-excess` (default 10) and a relative change in share of at least `--min-change` percent (default 50). This method requires a nonzero baseline; new categories have their own method. |
+| `robust` | The former detector: median/MAD clipping followed by a mean and population standard deviation; report absolute scores at least `--sigma` (default 2). |
+
+For `share`, expected count is `historical mean share × current total`, and excess is `actual count − expected count`. For example, a 0.1% baseline in a bucket of 100,000 predicts 100 events; 500 events means +400 excess and a +400% relative change in share. Uniform traffic growth does not trigger a finding. Decreases, including disappearance, can trigger findings too. This threshold is different from Logetizer's `--min-change`, which measures percentage points.
+
+History uses the previous `--window` nonempty buckets (default 100), with missing categories treated as 0%. Findings are calculated before adding the current bucket. Gaps in timestamps do not reset history. New-category tracking covers all prior input, beyond the rolling window. A count of 0–5 does not meet either default event threshold. These are configurable comparison heuristics, not proof of an incident.
+
+The optional `robust` method excludes values more than `max(2 × 1.4826 × MAD, 1 percentage point)` from the historical median, then calculates the mean and standard deviation of retained values. Standard deviation has a one-point floor. Scoring starts after two completed buckets if their shares span at most two points; otherwise it waits for five. `--window` must be at least five for this method. Its known sensitivity limitations for rare categories remain; `new` and `share` provide alternatives.
+
+```sh
+./bucketlyzer.py --method robust --sigma 3 < buckets.jsonl
+./bucketlyzer.py --method new --method share --window 20 --json < buckets.jsonl
+```
+
+Text output contains only findings, labeled by method, with the current share, signed change in percentage points, and excess count (or robust sigma score). Colors indicate direction using the same red/green scheme and `--color`/`NO_COLOR` behavior as Logetizer. `--json` emits every input bucket with an added `findings` array, including empty arrays, without colors. Invalid input stops processing with a line-numbered error on stderr and exit status 2.
 
 Use `./logetizer.py --help` to see all options.
 
@@ -119,9 +165,9 @@ Use `./logetizer.py --help` to see all options.
 - **Time:** The start of the bucket, rather than the timestamp of an individual matching line.
 - **Name:** The category from the matching rule, with any capture-group references expanded.
 - **Count:** The total for that category within the bucket.
-- **Percentage:** Included only with `--percent`, for example `errors: 112 (2%)`.
+- **Percentage:** Included with `--percent` or `--color-change`, for example `errors: 112 (2%)`.
 
-Categories are sorted alphabetically, ignoring case, with `Misses` last. Categories with no counts are omitted. A blank line separates completed buckets; use `--no-newline` to omit it.
+Categories are sorted alphabetically, ignoring case, with `Misses` last. Categories with no counts are omitted, except for disappearance rows in `--color-change` mode. A blank line separates completed buckets; use `--no-newline` to omit it.
 
 The first output line reports the bucket size. Warnings and debug information go to stderr. With `--debug-print-miss`, stdout contains only unmatched raw log lines, without the header or bucket summaries.
 
