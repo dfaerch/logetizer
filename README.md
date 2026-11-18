@@ -25,10 +25,10 @@ Time Bucket size = 30m
 0003 20261118 13:00:00 logins: 20962
 ```
 
-Repeat `--rules` to load multiple files. Files are loaded in command-line order, and rules within each file keep their original order. With `--exclusive`, the first matching rule across all files wins:
+Repeat `--rules` to load multiple files. Files are loaded in command-line order, and rules within each file keep their original order. By default, the first matching rule across all files wins:
 
 ```sh
-./logetizer.py --rules r.file.1 --rules some-other-file --exclusive < /var/log/maillog
+./logetizer.py --rules r.file.1 --rules some-other-file < /var/log/maillog
 ```
 
 To process a complete file, use input redirection:
@@ -75,11 +75,12 @@ Process logs in chronological order. Once a bucket closes, later input belonging
 
 ### Counting options
 
-By default, each matching rule adds one count per log line, even if its regex occurs several times in that line. A line can count under several rules. Regexes search the entire line, including the timestamp and hostname.
+By default, only the first matching rule adds a count for each log line, even if its regex occurs several times in that line. Use `--recount` to let a line count under several rules. Regexes search the entire line, including the timestamp and hostname.
 
 | Option | Effect |
 | --- | --- |
-| `--exclusive` | Stop at the first matching rule for each line, in file and rule order. |
+| `--exclusive` | Stop at the first matching rule for each line, in file and rule order (default). |
+| `--recount` | Count every matching rule for each line. |
 | `--misses` | Count lines that match no rule in a `Misses` category. |
 | `--percent` | Append each category's share of the bucket's visible counts, rounded to a whole percentage. |
 | `--skip N` | Skip the first N input lines before parsing timestamps or matching rules. |
@@ -87,10 +88,10 @@ By default, each matching rule adds one count per log line, even if its regex oc
 For example, to show the share of each category while counting each line at most once:
 
 ```sh
-./logetizer.py --rules test.rules --exclusive --misses --percent < /var/log/maillog
+./logetizer.py --rules test.rules --misses --percent < /var/log/maillog
 ```
 
-Without `--exclusive`, a line can contribute more than one count, so percentages describe the share of counts rather than the share of input lines.
+With `--recount`, a line can contribute more than one count, so percentages describe the share of counts rather than the share of input lines.
 
 Use `./logetizer.py --help` to see all options.
 
@@ -157,7 +158,7 @@ my $1 errors:Error: something (\S+)
 other errors:[Ee]rror
 ```
 
-Applied to the same log, these rules produce:
+Applied to the same log with `--recount`, these rules produce:
 
 ```
 0001 20261111 14:10:00 my bad errors: 1
@@ -165,7 +166,7 @@ Applied to the same log, these rules produce:
 0001 20261111 14:10:00 other errors: 3
 ```
 
-The second rule counts all three lines, including the two already counted by the first rule. To count each line only under the first matching rule, use `--exclusive`. Rules are checked in command-line file order, then in the order they appear within each file. The result is:
+The second rule counts all three lines, including the two already counted by the first rule. By default (`--exclusive`), each line counts only under the first matching rule. Rules are checked in command-line file order, then in the order they appear within each file. The result is:
 
 ```
 0001 20261111 14:10:00 my bad errors: 1
@@ -182,7 +183,7 @@ Prefix a category name with `!` to mark a rule as silent. It matches lines witho
 errors:[Ee]rror
 ```
 
-Silent matches are excluded from `Misses` and `--debug-print-miss` output. With `--exclusive`, a silent match also stops later rules from being checked, so place these rules before broader rules you want them to override. Without `--exclusive`, later rules can still count the same line.
+Silent matches are excluded from `Misses` and `--debug-print-miss` output. By default, a silent match also stops later rules from being checked, so place these rules before broader rules you want them to override. With `--recount`, later rules can still count the same line.
 
 ### Tips and tricks
 

@@ -1,0 +1,5 @@
+$1 start:: ([a-z]+)-login .*: Started proxying
+$1 connection closed: ([a-z]{2,10})-login:.* Disconnected: Connection closed
+$1 disconnect by $2: ([a-z]{2,10})-login:.*: Disconnected by (\w+)
+proxy-dest-auth-fail: Disconnected: Connection closed \(proxy dest auth failed
+SSL alert $1:unknown: SSL alert number (\d+)
