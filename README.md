@@ -43,7 +43,7 @@ To follow new log entries:
 tail -f /var/log/maillog | ./logetizer.py --rules test.rules
 ```
 
-On a terminal, Logetizer automatically starts updating the current bucket in place if input continues for more than a second. Use `--live` to enable this immediately or `--no-live` to print completed buckets without redrawing. Redirected output always uses ordinary text lines. The last bucket is printed when input ends or you press Ctrl+C.
+On a terminal, Logetizer automatically starts updating the current bucket in place if input continues for more than a second. Use `--live` to enable this immediately or `--no-live` to print completed buckets without redrawing. Redirected output always uses ordinary text lines. Live previews are limited to the terminal height, with an overflow summary for additional categories. Long preview rows do not wrap. When a bucket closes, its preview is cleared and every final row is printed once, so scrollback contains complete results rather than intermediate counts. The last bucket is printed when input ends or you press Ctrl+C.
 
 ### Bucket size and alignment
 
@@ -92,6 +92,20 @@ For example, to show the share of each category while counting each line at most
 ```
 
 With `--recount`, a line can contribute more than one count, so percentages describe the share of counts rather than the share of input lines.
+
+### Percentage anomaly highlighting
+
+Use `--anomalies` to include percentages and highlight unusual shares for each category:
+
+```sh
+tail -f /var/log/maillog | ./logetizer.py --rules test.rules --anomalies
+```
+
+Yellow means at least 2 standard deviations from the baseline; red means at least 3, for both increases and decreases. Each category is compared with its own percentages in the previous 100 completed, nonempty buckets, starting with the third bucket if the previous percentages span no more than 2 percentage points. If startup percentages vary more than that, highlighting waits for five completed buckets. This early-start check is applied separately to each category. Missing categories count as 0% in those buckets; empty time intervals are still omitted. Categories with zero current counts remain omitted.
+
+To keep spikes from skewing the average, the baseline first excludes values more than two robust standard deviations from the median (using median absolute deviation scaled by 1.4826). It then uses the mean and population standard deviation of the remaining values. Both the clipping tolerance and final standard deviation have a floor of one percentage point, so constant histories work and tiny changes aren't exaggerated. Calculations use unrounded percentages.
+
+Live percentages are provisional and use only completed buckets as history. Colors are enabled automatically on terminals, unless `NO_COLOR` is set. Use `--color always` to retain colors when piping, or `--color never` to disable them. The percentage stays uncolored. Anomalies append a signed change from the filtered historical mean in percentage points, for example `(9% +3pp)` means 9% compared with a 6% baseline. Only the change is colored; it remains visible with colors disabled. Changes are rounded to one decimal place, omitting trailing zeros. Normal percentages have no change appended. This is a heuristic for changes in category share; low-volume buckets can naturally have large percentage swings.
 
 Use `./logetizer.py --help` to see all options.
 

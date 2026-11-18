@@ -4,9 +4,11 @@ import argparse
 import codecs
 import os
 import select
+import shutil
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
+from statistics import mean, median, pstdev
 import re
 import sys
 
@@ -80,6 +82,73 @@ def load_patterns(path):
     return rules
 
 
+class LivePreview:
+    """Keep provisional output on screen; commit complete rows only at close."""
+
+    def __init__(self, output):
+        self.output = output
+        self.lines = 0
+
+    def clear(self):
+        if self.lines:
+            self.output.write(f'\x1b[{self.lines}A\r\x1b[J')
+            self.lines = 0
+
+    def draw(self, rows):
+        height = shutil.get_terminal_size().lines
+        limit = max(1, height - 2)
+        preview = rows[:limit]
+        if len(rows) > limit:
+            visible = max(0, limit - 1)
+            preview = rows[:visible] + [f'... {len(rows) - visible} more categories (shown when bucket closes)']
+        self.clear()
+        # A logical row must occupy exactly one screen row. Otherwise a long
+        # category name silently breaks cursor accounting, even in short buckets.
+        self.output.write('\x1b[?7l')
+        try:
+            for row in preview:
+                self.output.write('\r\x1b[2K' + row + '\r\n')
+        finally:
+            self.output.write('\x1b[?7h')
+        self.lines = len(preview)
+        self.output.flush()
+
+
+class PercentageHistory:
+    """Bounded, completed-bucket history shared by final and live rendering."""
+
+    def __init__(self, window=100):
+        self.buckets = deque(maxlen=window)
+
+    def score(self, name, percentage):
+        deviation = self.deviation(name, percentage)
+        return deviation[1] if deviation is not None else None
+
+    def deviation(self, name, percentage):
+        """Return (percentage-point change, sigma score), or None during warmup."""
+        if len(self.buckets) < 2:
+            return None
+        values = [bucket.get(name, 0.0) for bucket in self.buckets]
+        # Two similar completed buckets are enough for an early baseline.
+        # With a variable startup, wait for more evidence before clipping.
+        if len(values) < 5 and max(values) - min(values) > 2.0:
+            return None
+        center = median(values)
+        # Median absolute deviation seeds clipping without letting a spike
+        # inflate the standard deviation and hide subsequent spikes.
+        spread = 1.4826 * median(abs(value - center) for value in values)
+        typical = [value for value in values if abs(value - center) <= max(2 * spread, 1.0)]
+        # A one percentage-point floor handles constant histories and avoids
+        # highlighting negligible changes when the measured variance is tiny.
+        change = percentage - mean(typical)
+        return change, change / max(pstdev(typical), 1.0)
+
+    def add(self, counts):
+        total = sum(counts.values())
+        if total:
+            self.buckets.append({name: count * 100 / total for name, count in counts.items()})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--rules', action='append', required=True, metavar='FILE', help='one "Name: regex" per line; repeat to load rule files in order')
@@ -91,6 +160,8 @@ def main():
     matching_group.add_argument('--recount', dest='exclusive', action='store_false', help='count every matching regex rule per line')
     parser.add_argument('--misses', action='store_true', help='count unmatched lines in a Misses category')
     parser.add_argument('--percent', action='store_true', help='append percentage of visible counts within each bucket')
+    parser.add_argument('--anomalies', action='store_true', help='show percentages and highlight deviations from robust history (yellow: 2 sigma, red: 3 sigma)')
+    parser.add_argument('--color', choices=('auto', 'always', 'never'), default='auto', help='anomaly colors: auto uses a terminal unless NO_COLOR is set')
     parser.add_argument('--no-newline', action='store_true', help='omit the blank line after each completed bucket')
     parser.add_argument('--debug', action='store_true', help='show each eligible log line and rule matches on stderr')
     parser.add_argument('--debug-print-miss', action='store_true', help='print only raw lines matching no regex rule (including silent rules); suppress all other output')
@@ -125,11 +196,14 @@ def main():
     late_lines = 0
     last_emitted = None
     terminal = sys.stdout.isatty()
+    anomaly_colors = args.anomalies and (args.color == 'always' or (
+        args.color == 'auto' and terminal and 'NO_COLOR' not in os.environ))
+    percentage_history = PercentageHistory()
     live = args.live_mode is True and terminal and not args.debug_print_miss
     if args.live_mode is True and not terminal and not args.debug_print_miss:
         print('Warning: --live requires a terminal on stdout; using normal streaming output', file=sys.stderr)
     auto_live = terminal and args.live_mode is None and not args.debug_print_miss
-    rendered_lines = 0
+    preview = LivePreview(sys.stdout)
     dirty = False
     last_redraw = 0.0
     redraw_interval = 0.2
@@ -165,44 +239,45 @@ def main():
         total = sum(active_counts.values())
         for name in sorted(active_counts, key=lambda name: (name == 'Misses', name.casefold())):
             count = active_counts[name]
-            percent = f' ({count * 100 / total:.0f}%)' if args.percent and total else ''
+            percent = ''
+            if (args.percent or args.anomalies) and total:
+                percentage = count * 100 / total
+                label = f'{percentage:.0f}%'
+                if args.anomalies:
+                    deviation = percentage_history.deviation(name, percentage)
+                    if deviation is not None and abs(deviation[1]) >= 2:
+                        change, score = deviation
+                        delta = f'{change:+.1f}'.rstrip('0').rstrip('.') + 'pp'
+                        if anomaly_colors:
+                            color = 31 if abs(score) >= 3 else 33
+                            delta = f'\x1b[{color}m{delta}\x1b[0m'
+                        label = f'{label} {delta}'
+                percent = f' ({label})'
             yield f'{bucket_index + 1:04d} {active_bucket:%Y%m%d %H:%M:%S} {name}: {count}{percent}'
 
     def display_live():
-        """Rewrite only the current bucket, leaving completed rows untouched."""
-        nonlocal rendered_lines, dirty, last_redraw
+        """Rewrite a bounded preview, leaving completed rows untouched."""
+        nonlocal dirty, last_redraw
         if not live or active_bucket is None:
             return
-        rows = list(bucket_rows())
-        if rendered_lines:
-            # Cursor is positioned immediately below the previously drawn rows.
-            sys.stdout.write(f'\x1b[{rendered_lines}A')
-        for row in rows:
-            sys.stdout.write('\r\x1b[2K' + row + '\n')
-        for _ in range(rendered_lines - len(rows)):
-            sys.stdout.write('\r\x1b[2K\n')
-        # Counts only increase, so rows should never shrink, but handle it anyway.
-        if rendered_lines > len(rows):
-            sys.stdout.write(f'\x1b[{rendered_lines - len(rows)}A')
-        sys.stdout.flush()
-        rendered_lines = len(rows)
+        preview.draw(list(bucket_rows()))
         dirty = False
         last_redraw = time.monotonic()
 
     def emit_bucket():
-        nonlocal active_bucket, active_counts, bucket_index, last_emitted, name_order, rendered_lines, dirty
+        nonlocal active_bucket, active_counts, bucket_index, last_emitted, name_order, dirty
         if active_bucket is None:
             return
         if active_counts:
             if live:
-                display_live()  # Final redraw, if required. Rows already remain on screen.
-            else:
-                for row in bucket_rows():
-                    print(row, flush=True)
+                preview.clear()
+            for row in bucket_rows():
+                print(row, flush=True)
             if not args.no_newline:
                 print(flush=True)  # Separate completed buckets, including in live TTY mode.
+            if args.anomalies:
+                percentage_history.add(active_counts)
             bucket_index += 1
-        rendered_lines = 0
         dirty = False
         last_emitted = active_bucket
         active_bucket = None
