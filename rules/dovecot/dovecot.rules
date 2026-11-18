@@ -1,0 +1,12 @@
+# Logins
+$1 login: dovecot\[\d+\]: ([a-z]+\d?)-login: Login
+
+# Disconnect reasons
+$1 disconnected - $2: dovecot\[\d+\]: ([a-z]{2,10}\d?)(?:-login:|\().* Disconnected: (.*?)(?=\s*(?:\(|\d|\w+=|$))
+
+# Error reasons
+$1 error - $2: dovecot\[\d+\]: ([a-z]{2,10}\d?)(?:-login:|\().*Error:.*\):? ([A-Za-z]+)
+
+proxy-dest-auth-fail: Disconnected: Connection closed \(proxy dest auth failed
+SSL alert $1:unknown: SSL alert number (\d+)
+
