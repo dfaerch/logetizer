@@ -105,7 +105,7 @@ For example, `(9% +3pp)` means the share rose from 6% to 9%. Only the change is 
 
 `--min-change PP` controls the minimum absolute change displayed, in percentage points (default `0.1`). Changes are computed before rounding and displayed to one decimal place, with trailing zeros omitted; changes that round to zero are omitted. Percentages retain whole-number rounding. Live comparisons always use the previous completed bucket, so redraws don't affect the baseline.
 
-Colors are automatic on terminals unless `NO_COLOR` is set. Use `--color always` to retain colors through pipes, or `--color never` to disable them. Signed changes remain visible without colors. `--percent` alone still displays percentages without changes.
+Colors are automatic on terminals unless `NO_COLOR` is set. Use `--color always` to retain colors through pipes, or `--color never` to disable them. Signed changes remain visible without colors. `--percent` alone displays percentages without changes.
 
 ### JSON Lines output
 
@@ -125,7 +125,9 @@ Each record has this schema:
 
 ## Bucketlyzer
 
-Bucketlyzer analyzes Logetizer JSON Lines from stdin. It uses only the Python standard library. Statistical analysis now lives here; Logetizer's former `--anomalies` option has been removed.
+Note: Bucketlyzer is highly experimental and may produce misleading findings.
+
+Bucketlyzer analyzes Logetizer JSON Lines from stdin. It uses only the Python standard library.
 
 ```sh
 ./logetizer.py --rules test.rules --bucket-size 6h --misses --json < /var/log/maillog |
@@ -138,13 +140,13 @@ By default it combines `new` and `share` methods. Select methods explicitly with
 | --- | --- |
 | `new` | Report a category never previously observed with a positive count, when its current count reaches `--min-count` (default 10). The first bucket establishes known categories without findings. A category previously seen with a small count is not new later. |
 | `share` | Compare the current share with the mean share across previous buckets. Require both an absolute excess-event count of at least `--min-excess` (default 10) and a relative change in share of at least `--min-change` percent (default 50). This method requires a nonzero baseline; new categories have their own method. |
-| `robust` | The former detector: median/MAD clipping followed by a mean and population standard deviation; report absolute scores at least `--sigma` (default 2). |
+| `robust` | Use median/MAD clipping followed by a mean and population standard deviation; report absolute scores at least `--sigma` (default 2). |
 
 For `share`, expected count is `historical mean share × current total`, and excess is `actual count − expected count`. For example, a 0.1% baseline in a bucket of 100,000 predicts 100 events; 500 events means +400 excess and a +400% relative change in share. Uniform traffic growth does not trigger a finding. Decreases, including disappearance, can trigger findings too. This threshold is different from Logetizer's `--min-change`, which measures percentage points.
 
 History uses the previous `--window` nonempty buckets (default 100), with missing categories treated as 0%. Findings are calculated before adding the current bucket. Gaps in timestamps do not reset history. New-category tracking covers all prior input, beyond the rolling window. A count of 0–5 does not meet either default event threshold. These are configurable comparison heuristics, not proof of an incident.
 
-The optional `robust` method excludes values more than `max(2 × 1.4826 × MAD, 1 percentage point)` from the historical median, then calculates the mean and standard deviation of retained values. Standard deviation has a one-point floor. Scoring starts after two completed buckets if their shares span at most two points; otherwise it waits for five. `--window` must be at least five for this method. Its known sensitivity limitations for rare categories remain; `new` and `share` provide alternatives.
+The optional `robust` method excludes values more than `max(2 × 1.4826 × MAD, 1 percentage point)` from the historical median, then calculates the mean and standard deviation of retained values. Standard deviation has a one-point floor. Scoring starts after two completed buckets if their shares span at most two points; otherwise it waits for five. `--window` must be at least five for this method. The one-point floor limits sensitivity to changes in rare categories; use `new` or `share` to detect those changes.
 
 ```sh
 ./bucketlyzer.py --method robust --sigma 3 < buckets.jsonl
