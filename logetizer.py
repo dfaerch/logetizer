@@ -82,7 +82,7 @@ def load_patterns(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--regex-file', required=True, help='one "Name: regex" per line')
+    parser.add_argument('--rules', action='append', required=True, metavar='FILE', help='one "Name: regex" per line; repeat to load rule files in order')
     parser.add_argument('--bucket-size', type=parse_duration, default=600, metavar='SIZE', help='e.g. 30s, 10m, 1h')
     parser.add_argument('--from', dest='from_time', metavar='TIME', help='inclusive, quoted timestamp')
     parser.add_argument('--to', dest='to_time', metavar='TIME', help='inclusive, quoted timestamp')
@@ -102,7 +102,9 @@ def main():
     args = parser.parse_args()
 
     try:
-        rules = load_patterns(args.regex_file)
+        rules = []
+        for path in args.rules:
+            rules.extend(load_patterns(path))
         lower = parse_time(args.from_time, args.year) if args.from_time else None
         upper = parse_time(args.to_time, args.year) if args.to_time else None
     except (ValueError, OSError) as exc:

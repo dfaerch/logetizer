@@ -10,10 +10,10 @@ Logetizer searches logs using regular expressions and counts matches in time buc
 
 ## Running
 
-Logetizer requires Python 3 and uses only the standard library. It reads logs from standard input. Select a rule file with `--regex-file` and optionally set the bucket size:
+Logetizer requires Python 3 and uses only the standard library. It reads logs from standard input. Select one or more rule files with `--rules` and optionally set the bucket size:
 
 ```
-$ tail -n 120000 /var/log/maillog | ./logetizer.py --regex-file test.rules --bucket-size 30m
+$ tail -n 120000 /var/log/maillog | ./logetizer.py --rules test.rules --bucket-size 30m
 Time Bucket size = 30m
 0001 20261118 12:00:00 errors: 112
 0001 20261118 12:00:00 logins: 5563
@@ -25,16 +25,22 @@ Time Bucket size = 30m
 0003 20261118 13:00:00 logins: 20962
 ```
 
+Repeat `--rules` to load multiple files. Files are loaded in command-line order, and rules within each file keep their original order. With `--exclusive`, the first matching rule across all files wins:
+
+```sh
+./logetizer.py --rules r.file.1 --rules some-other-file --exclusive < /var/log/maillog
+```
+
 To process a complete file, use input redirection:
 
 ```sh
-./logetizer.py --regex-file test.rules < /var/log/maillog
+./logetizer.py --rules test.rules < /var/log/maillog
 ```
 
 To follow new log entries:
 
 ```sh
-tail -f /var/log/maillog | ./logetizer.py --regex-file test.rules
+tail -f /var/log/maillog | ./logetizer.py --rules test.rules
 ```
 
 On a terminal, Logetizer automatically starts updating the current bucket in place if input continues for more than a second. Use `--live` to enable this immediately or `--no-live` to print completed buckets without redrawing. Redirected output always uses ordinary text lines. The last bucket is printed when input ends or you press Ctrl+C.
@@ -44,7 +50,7 @@ On a terminal, Logetizer automatically starts updating the current bucket in pla
 The default bucket size is 10 minutes. Use `--bucket-size` with a positive integer followed by `s`, `m`, `h`, or `d` for seconds, minutes, hours, or days:
 
 ```sh
-./logetizer.py --regex-file test.rules --bucket-size 30s < /var/log/maillog
+./logetizer.py --rules test.rules --bucket-size 30s < /var/log/maillog
 ```
 
 By default, buckets align to clock boundaries measured from midnight. With `--bucket-size 30m`, a line at 12:17 belongs to the bucket starting at 12:00. Use `--align first` to start the first bucket at the timestamp of the first eligible log line instead.
@@ -54,7 +60,7 @@ By default, buckets align to clock boundaries measured from midnight. With `--bu
 Use `--from` and `--to` to count only lines within a time range. Both limits are inclusive:
 
 ```sh
-./logetizer.py --regex-file test.rules \
+./logetizer.py --rules test.rules \
   --from '2026-11-18 12:00:00' --to '2026-11-18 12:59:59' \
   < /var/log/maillog
 ```
@@ -73,7 +79,7 @@ By default, each matching rule adds one count per log line, even if its regex oc
 
 | Option | Effect |
 | --- | --- |
-| `--exclusive` | Stop at the first matching rule for each line, in rule-file order. |
+| `--exclusive` | Stop at the first matching rule for each line, in file and rule order. |
 | `--misses` | Count lines that match no rule in a `Misses` category. |
 | `--percent` | Append each category's share of the bucket's visible counts, rounded to a whole percentage. |
 | `--skip N` | Skip the first N input lines before parsing timestamps or matching rules. |
@@ -81,7 +87,7 @@ By default, each matching rule adds one count per log line, even if its regex oc
 For example, to show the share of each category while counting each line at most once:
 
 ```sh
-./logetizer.py --regex-file test.rules --exclusive --misses --percent < /var/log/maillog
+./logetizer.py --rules test.rules --exclusive --misses --percent < /var/log/maillog
 ```
 
 Without `--exclusive`, a line can contribute more than one count, so percentages describe the share of counts rather than the share of input lines.
@@ -159,7 +165,7 @@ Applied to the same log, these rules produce:
 0001 20261111 14:10:00 other errors: 3
 ```
 
-The second rule counts all three lines, including the two already counted by the first rule. To count each line only under the first matching rule, use `--exclusive`. Rules are checked in the order they appear in the rule file. The result is:
+The second rule counts all three lines, including the two already counted by the first rule. To count each line only under the first matching rule, use `--exclusive`. Rules are checked in command-line file order, then in the order they appear within each file. The result is:
 
 ```
 0001 20261111 14:10:00 my bad errors: 1
@@ -185,11 +191,11 @@ To find gaps in your rules, use `--debug-print-miss` to print only log lines tha
 Example:
 
 ```
-tail -f /var/log/maillog | ./logetizer.py --regex-file private_rules/mymail.rules --debug-print-miss
+tail -f /var/log/maillog | ./logetizer.py --rules private_rules/mymail.rules --debug-print-miss
 ```
 
 To inspect which rules match each eligible line, add `--debug`. It prints the line, matching rule numbers, category names, regexes, and captured groups to stderr while retaining the usual bucket output on stdout:
 
 ```sh
-./logetizer.py --regex-file test.rules --debug < /var/log/maillog
+./logetizer.py --rules test.rules --debug < /var/log/maillog
 ```
